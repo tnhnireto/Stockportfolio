@@ -10,6 +10,8 @@ interface Holding {
   purchasePrice: number;
   currentPrice: number;
   dividendYield: number;
+  currency?: string;
+  valueNOK?: number | null;
 }
 
 interface HoldingsListProps {
@@ -18,12 +20,18 @@ interface HoldingsListProps {
 }
 
 export function HoldingsList({ holdings, onDelete }: HoldingsListProps) {
-  const formatNOK = (amount: number) => {
+  const formatMoney = (amount: number, currency: string) => {
     return new Intl.NumberFormat('nb-NO', {
       style: 'currency',
-      currency: 'NOK',
+      currency,
     }).format(amount);
   };
+
+  const sortedHoldings = [...holdings].sort((a, b) => {
+    const nameCmp = a.name.localeCompare(b.name, 'nb-NO', { sensitivity: 'base' });
+    if (nameCmp !== 0) return nameCmp;
+    return a.symbol.localeCompare(b.symbol, 'nb-NO', { sensitivity: 'base' });
+  });
 
   if (holdings.length === 0) {
     return (
@@ -38,11 +46,18 @@ export function HoldingsList({ holdings, onDelete }: HoldingsListProps) {
 
   return (
     <div className="space-y-3">
-      {holdings.map((holding) => {
-        const totalValue = holding.shares * holding.currentPrice;
+      {sortedHoldings.map((holding) => {
+        const priceCurrency = holding.currency || 'NOK';
+        const totalValuePriceCcy = holding.shares * holding.currentPrice;
+        const totalValueNOK =
+          typeof holding.valueNOK === 'number'
+            ? holding.valueNOK
+            : priceCurrency === 'NOK'
+              ? totalValuePriceCcy
+              : null;
         const totalCost = holding.shares * holding.purchasePrice;
-        const gainLoss = totalValue - totalCost;
-        const gainLossPercent = (gainLoss / totalCost) * 100;
+        const gainLoss = (totalValueNOK ?? 0) - totalCost;
+        const gainLossPercent = totalCost > 0 ? (gainLoss / totalCost) * 100 : 0;
         const isPositive = gainLoss >= 0;
 
         return (
@@ -71,15 +86,17 @@ export function HoldingsList({ holdings, onDelete }: HoldingsListProps) {
                 </div>
                 <div>
                   <p className="text-muted-foreground">Current Price</p>
-                  <p className="font-semibold">{formatNOK(holding.currentPrice)}</p>
+                  <p className="font-semibold">{formatMoney(holding.currentPrice, priceCurrency)}</p>
                 </div>
                 <div>
                   <p className="text-muted-foreground">Purchase Price</p>
-                  <p className="font-semibold">{formatNOK(holding.purchasePrice)}</p>
+                  <p className="font-semibold">{formatMoney(holding.purchasePrice, priceCurrency)}</p>
                 </div>
                 <div>
-                  <p className="text-muted-foreground">Total Value</p>
-                  <p className="font-semibold">{formatNOK(totalValue)}</p>
+                  <p className="text-muted-foreground">Total Value (NOK)</p>
+                  <p className="font-semibold">
+                    {formatMoney(totalValueNOK ?? 0, 'NOK')}
+                  </p>
                 </div>
               </div>
               <div className="flex items-center justify-between pt-2 border-t">
@@ -90,7 +107,7 @@ export function HoldingsList({ holdings, onDelete }: HoldingsListProps) {
                     <TrendingDown className="h-4 w-4 text-red-600" />
                   )}
                   <span className={`font-semibold ${isPositive ? 'text-green-600' : 'text-red-600'}`}>
-                    {isPositive ? '+' : ''}{formatNOK(gainLoss)} ({isPositive ? '+' : ''}{gainLossPercent.toFixed(2)}%)
+                    {isPositive ? '+' : ''}{formatMoney(gainLoss, 'NOK')} ({isPositive ? '+' : ''}{gainLossPercent.toFixed(2)}%)
                   </span>
                 </div>
                 {holding.dividendYield > 0 && (

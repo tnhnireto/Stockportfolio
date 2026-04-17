@@ -9,6 +9,8 @@ interface Holding {
   purchasePrice: number;
   currentPrice: number;
   dividendYield: number;
+  currency?: string;
+  valueNOK?: number | null;
 }
 
 interface PortfolioChartProps {
@@ -29,10 +31,30 @@ export function PortfolioChart({ holdings }: PortfolioChartProps) {
     return null;
   }
 
-  const data = holdings.map((holding) => ({
-    name: holding.symbol,
-    value: holding.shares * holding.currentPrice,
-  }));
+  const data = holdings
+    .map((holding) => ({
+      name: holding.symbol,
+      value:
+        typeof holding.valueNOK === 'number'
+          ? holding.valueNOK
+          : (holding.currency || 'NOK') === 'NOK'
+            ? holding.shares * holding.currentPrice
+            : 0,
+    }))
+    .filter((d) => d.value > 0);
+
+  if (data.length === 0) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Portfolio Allocation</CardTitle>
+        </CardHeader>
+        <CardContent className="text-sm text-muted-foreground">
+          Add NOK prices or Verdi (NOK) on holdings to show allocation in NOK.
+        </CardContent>
+      </Card>
+    );
+  }
 
   return (
     <Card>

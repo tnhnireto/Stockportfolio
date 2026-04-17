@@ -37,6 +37,7 @@ export function AIAdvisor({ holdings, projectId, publicAnonKey }: AIAdvisorProps
         `https://${projectId}.supabase.co/functions/v1/make-server-078eec38/analyze-portfolio`,
         {
           method: 'POST',
+          cache: 'no-store',
           headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${publicAnonKey}`,

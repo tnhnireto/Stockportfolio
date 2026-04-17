@@ -9,6 +9,8 @@ interface Holding {
   purchasePrice: number;
   currentPrice: number;
   dividendYield: number;
+  currency?: string;
+  valueNOK?: number | null;
 }
 
 interface PortfolioStatsProps {
@@ -16,23 +18,34 @@ interface PortfolioStatsProps {
 }
 
 export function PortfolioStats({ holdings }: PortfolioStatsProps) {
-  const totalInvested = holdings.reduce(
-    (sum, holding) => sum + holding.shares * holding.purchasePrice,
-    0
-  );
+  const allPurchaseInNOK = holdings.every((h) => (h.currency || 'NOK') === 'NOK');
+  const allPricesNOK = holdings.every((h) => (h.currency || 'NOK') === 'NOK');
+  const totalInvested = holdings.reduce((sum, holding) => {
+    const ccy = holding.currency || 'NOK';
+    if (ccy !== 'NOK') return sum;
+    return sum + holding.shares * holding.purchasePrice;
+  }, 0);
 
   const currentValue = holdings.reduce(
-    (sum, holding) => sum + holding.shares * holding.currentPrice,
+    (sum, holding) => {
+      if (typeof holding.valueNOK === 'number') return sum + holding.valueNOK;
+      const ccy = holding.currency || 'NOK';
+      if (ccy === 'NOK') return sum + holding.shares * holding.currentPrice;
+      return sum;
+    },
     0
   );
 
-  const totalGainLoss = currentValue - totalInvested;
-  const totalGainLossPercent = totalInvested > 0 ? (totalGainLoss / totalInvested) * 100 : 0;
+  const totalGainLoss = allPurchaseInNOK ? currentValue - totalInvested : NaN;
+  const totalGainLossPercent =
+    allPurchaseInNOK && totalInvested > 0 ? (totalGainLoss / totalInvested) * 100 : 0;
 
-  const annualDividends = holdings.reduce(
-    (sum, holding) => sum + (holding.shares * holding.currentPrice * holding.dividendYield) / 100,
-    0
-  );
+  const annualDividends = allPricesNOK
+    ? holdings.reduce(
+        (sum, holding) => sum + (holding.shares * holding.currentPrice * holding.dividendYield) / 100,
+        0
+      )
+    : NaN;
 
   const formatNOK = (amount: number) => {
     return new Intl.NumberFormat('nb-NO', {
@@ -50,20 +63,24 @@ export function PortfolioStats({ holdings }: PortfolioStatsProps) {
     },
     {
       title: 'Total Invested',
-      value: formatNOK(totalInvested),
+      value: allPurchaseInNOK ? formatNOK(totalInvested) : '—',
+      subValue: allPurchaseInNOK ? undefined : 'Mixed purchase currencies (NOK sum not shown)',
       icon: PieChart,
       color: 'text-purple-600',
     },
     {
       title: 'Total Gain/Loss',
-      value: formatNOK(totalGainLoss),
-      subValue: `${totalGainLossPercent >= 0 ? '+' : ''}${totalGainLossPercent.toFixed(2)}%`,
-      icon: totalGainLoss >= 0 ? TrendingUp : TrendingDown,
-      color: totalGainLoss >= 0 ? 'text-green-600' : 'text-red-600',
+      value: allPurchaseInNOK ? formatNOK(totalGainLoss) : '—',
+      subValue: allPurchaseInNOK
+        ? `${totalGainLossPercent >= 0 ? '+' : ''}${totalGainLossPercent.toFixed(2)}%`
+        : 'Needs all purchase prices in NOK to compare to total value',
+      icon: allPurchaseInNOK ? (totalGainLoss >= 0 ? TrendingUp : TrendingDown) : TrendingUp,
+      color: allPurchaseInNOK ? (totalGainLoss >= 0 ? 'text-green-600' : 'text-red-600') : 'text-muted-foreground',
     },
     {
       title: 'Annual Dividends',
-      value: formatNOK(annualDividends),
+      value: allPricesNOK ? formatNOK(annualDividends) : '—',
+      subValue: allPricesNOK ? undefined : 'Estimates need prices in NOK (or convert manually)',
       icon: DollarSign,
       color: 'text-emerald-600',
     },

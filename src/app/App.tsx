@@ -19,6 +19,8 @@ interface Holding {
   purchasePrice: number;
   currentPrice: number;
   dividendYield: number;
+  currency?: string;
+  valueNOK?: number | null;
 }
 
 export default function App() {
@@ -26,6 +28,58 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [extractedStocks, setExtractedStocks] = useState<any[]>([]);
   const [showImportDialog, setShowImportDialog] = useState(false);
+
+  const normalizeSymbol = (value: unknown): string => {
+    if (typeof value !== 'string') return '';
+    // Normalize symbols like "AKER BP" vs "AKERBP" vs "AKER-BP"
+    // Also handles symbols with exchange suffixes like "AKERBP.OL".
+    const trimmed = value.trim().toUpperCase();
+    const base = trimmed.split(/[\/\s]/)[0];
+    return base.replace(/[^A-Z0-9]/g, '');
+  };
+
+  const normalizeName = (value: unknown): string => {
+    if (typeof value !== 'string') return '';
+    return value.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+  };
+
+  const findExistingHolding = (symbolValue: unknown, nameValue?: unknown) => {
+    const sym = normalizeSymbol(symbolValue);
+    if (sym) {
+      const exact = holdings.find((h) => normalizeSymbol(h.symbol) === sym);
+      if (exact) return exact;
+
+      // Fallback: tolerate common exchange suffixes (e.g. AKERBPOL) by prefix matching.
+      // Only match when at least 4 chars to avoid accidental collisions.
+      if (sym.length >= 4) {
+        const byPrefix = holdings.find((h) => {
+          const hs = normalizeSymbol(h.symbol);
+          return (hs.startsWith(sym) || sym.startsWith(hs)) && Math.min(hs.length, sym.length) >= 4;
+        });
+        if (byPrefix) return byPrefix;
+      }
+    }
+
+    const normName = normalizeName(nameValue);
+    if (!normName) return undefined;
+
+    const matches = holdings.filter((h) => normalizeName(h.name) === normName);
+    if (matches.length === 0) return undefined;
+    if (matches.length === 1) return matches[0];
+
+    // If duplicates already exist, choose the best match by symbol similarity.
+    // Prefer a holding whose normalized symbol is contained in the extracted symbol (or vice versa).
+    if (sym) {
+      const bySymbolSimilarity = matches.find((h) => {
+        const hs = normalizeSymbol(h.symbol);
+        return (hs && (hs.includes(sym) || sym.includes(hs))) && Math.min(hs.length, sym.length) >= 3;
+      });
+      if (bySymbolSimilarity) return bySymbolSimilarity;
+    }
+
+    // Deterministic fallback: pick the first (oldest) match.
+    return matches[0];
+  };
 
   useEffect(() => {
     fetchPortfolio();
@@ -36,6 +90,7 @@ export default function App() {
       const response = await fetch(
         `https://${projectId}.supabase.co/functions/v1/make-server-078eec38/portfolio`,
         {
+          cache: 'no-store',
           headers: {
             'Authorization': `Bearer ${publicAnonKey}`,
           },
@@ -63,12 +118,15 @@ export default function App() {
     shares: number;
     purchasePrice: number;
     dividendYield: number;
+    currentPrice?: number;
+    currency?: string;
   }) => {
     try {
       const response = await fetch(
         `https://${projectId}.supabase.co/functions/v1/make-server-078eec38/portfolio`,
         {
           method: 'POST',
+          cache: 'no-store',
           headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${publicAnonKey}`,
@@ -80,7 +138,7 @@ export default function App() {
       const data = await response.json();
 
       if (response.ok && data.success) {
-        setHoldings([...holdings, data.data]);
+        setHoldings((prev) => [...prev, data.data]);
         toast.success(`Added ${stock.symbol} to portfolio`);
       } else {
         throw new Error(data.error || 'Failed to add stock');
@@ -97,6 +155,7 @@ export default function App() {
         `https://${projectId}.supabase.co/functions/v1/make-server-078eec38/portfolio/${id}`,
         {
           method: 'DELETE',
+          cache: 'no-store',
           headers: {
             'Authorization': `Bearer ${publicAnonKey}`,
           },
@@ -106,7 +165,7 @@ export default function App() {
       const data = await response.json();
 
       if (response.ok && data.success) {
-        setHoldings(holdings.filter((h) => h.id !== id));
+        setHoldings((prev) => prev.filter((h) => h.id !== id));
         toast.success('Stock removed from portfolio');
       } else {
         throw new Error(data.error || 'Failed to delete stock');
@@ -117,21 +176,111 @@ export default function App() {
     }
   };
 
+  const handleUpdateStock = async (id: string, patch: Partial<Holding>) => {
+    try {
+      const response = await fetch(
+        `https://${projectId}.supabase.co/functions/v1/make-server-078eec38/portfolio/${id}`,
+        {
+          method: 'PUT',
+          cache: 'no-store',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${publicAnonKey}`,
+          },
+          body: JSON.stringify(patch),
+        }
+      );
+
+      const data = await response.json();
+
+      if (response.ok && data.success) {
+        setHoldings((prev) => prev.map((h) => (h.id === id ? data.data : h)));
+        return data.data as Holding;
+      }
+
+      throw new Error(data.error || 'Failed to update stock');
+    } catch (error) {
+      console.error('Error updating stock:', error);
+      toast.error(error instanceof Error ? error.message : 'Failed to update stock');
+      throw error;
+    }
+  };
+
   const handleStocksExtracted = (stocks: any[]) => {
-    setExtractedStocks(stocks);
+    const merged = stocks.map((s: any) => {
+      const existing = findExistingHolding(s?.symbol, s?.name);
+      if (!existing) return s;
+
+      return {
+        ...s,
+        symbol: existing.symbol,
+        // If we already own it, default to stored purchase price.
+        purchasePrice: existing.purchasePrice,
+        currency: s.currency || existing.currency,
+        valueNOK: typeof s.valueNOK === 'number' ? s.valueNOK : existing.valueNOK,
+      };
+    });
+    setExtractedStocks(merged);
     setShowImportDialog(true);
+  };
+
+  const updateExtractedStock = (idx: number, patch: Partial<any>) => {
+    setExtractedStocks((prev) => prev.map((s, i) => (i === idx ? { ...s, ...patch } : s)));
+  };
+
+  const parseUserNumber = (value: unknown): number | null => {
+    if (value === null || value === undefined) return null;
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    // Accept both "350,80" and "350.80"
+    const normalized = trimmed.replace(/\s/g, '').replace(',', '.');
+    const num = Number(normalized);
+    return Number.isFinite(num) ? num : null;
   };
 
   const handleImportStocks = async () => {
     try {
+      const missingPurchasePriceNew = extractedStocks.some((s) => {
+        const existing = findExistingHolding(s?.symbol, s?.name);
+        if (existing) return false;
+        const pp = parseUserNumber(s.purchasePrice);
+        return pp === null;
+      });
+      if (missingPurchasePriceNew) {
+        toast.error('Please fill in purchase price for new stocks before importing.');
+        return;
+      }
+
       for (const stock of extractedStocks) {
-        await handleAddStock({
-          symbol: stock.symbol,
-          name: stock.name,
-          shares: stock.shares,
-          purchasePrice: stock.currentPrice, // Use current price as purchase price if not available
-          dividendYield: stock.dividendYield || 0,
-        });
+        const existing = findExistingHolding(stock.symbol, stock.name);
+        const symbol = existing?.symbol ?? (typeof stock.symbol === 'string' ? stock.symbol.trim().toUpperCase() : '');
+
+        const purchasePrice = parseUserNumber(stock.purchasePrice);
+        const valueNOK = parseUserNumber(stock.valueNOK);
+        const patch: any = {
+          symbol,
+          name: typeof stock.name === 'string' ? stock.name : '',
+          shares: parseUserNumber(stock.shares) ?? 0,
+          currentPrice: parseUserNumber(stock.currentPrice) ?? 0,
+          dividendYield: parseUserNumber(stock.dividendYield) ?? 0,
+          currency: typeof stock.currency === 'string' && stock.currency.trim() ? stock.currency.trim().toUpperCase() : 'UNKNOWN',
+          valueNOK: valueNOK,
+        };
+        // Only include purchasePrice if user explicitly provided a value.
+        // For existing holdings, leaving it blank should never overwrite the stored purchasePrice.
+        if (typeof stock.purchasePrice === 'number' || (typeof stock.purchasePrice === 'string' && stock.purchasePrice.trim() !== '')) {
+          if (purchasePrice !== null) patch.purchasePrice = purchasePrice;
+        }
+
+        if (existing) {
+          await handleUpdateStock(existing.id, patch);
+        } else {
+          // For new stocks, purchasePrice must be present due to validation above.
+          patch.purchasePrice = patch.purchasePrice ?? 0;
+          await handleAddStock(patch);
+        }
       }
       setShowImportDialog(false);
       setExtractedStocks([]);
@@ -200,20 +349,74 @@ export default function App() {
 
       {/* Import Dialog */}
       <AlertDialog open={showImportDialog} onOpenChange={setShowImportDialog}>
-        <AlertDialogContent>
+        <AlertDialogContent className="max-h-[85vh] overflow-hidden">
           <AlertDialogHeader>
             <AlertDialogTitle>Import Extracted Stocks?</AlertDialogTitle>
             <AlertDialogDescription>
-              We found {extractedStocks.length} stocks in your screenshot:
-              <ul className="mt-2 space-y-1">
-                {extractedStocks.map((stock, idx) => (
-                  <li key={idx} className="text-sm font-medium text-foreground">
-                    {stock.symbol} - {stock.shares} shares @ ${stock.currentPrice}
-                  </li>
-                ))}
-              </ul>
-              <p className="mt-2">Do you want to add these to your portfolio?</p>
+                We found {extractedStocks.length} stocks in your screenshot. Review and edit the extracted values before importing.
             </AlertDialogDescription>
+              <div className="mt-3 space-y-3 max-h-[55vh] overflow-y-auto pr-2">
+                {extractedStocks.map((stock, idx) => {
+                  const currency = typeof stock.currency === 'string' && stock.currency.trim() ? stock.currency.trim().toUpperCase() : 'UNKNOWN';
+                  const purchasePriceMissing = parseUserNumber(stock.purchasePrice) === null;
+
+                  return (
+                    <div key={idx} className="rounded-md border p-3 space-y-2">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="text-sm font-semibold text-foreground">
+                          {stock.symbol} <span className="text-muted-foreground font-normal">({currency})</span>
+                        </div>
+                        <div className="text-xs text-muted-foreground">{stock.name}</div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2">
+                        <label className="space-y-1">
+                          <div className="text-xs text-muted-foreground">Shares</div>
+                          <input
+                            className="h-9 w-full rounded-md border bg-background px-3 text-sm"
+                            inputMode="decimal"
+                            value={stock.shares ?? ''}
+                            onChange={(e) => updateExtractedStock(idx, { shares: e.target.value })}
+                          />
+                        </label>
+
+                        <label className="space-y-1">
+                          <div className="text-xs text-muted-foreground">Current price (Siste)</div>
+                          <input
+                            className="h-9 w-full rounded-md border bg-background px-3 text-sm"
+                            inputMode="decimal"
+                            value={stock.currentPrice ?? ''}
+                            onChange={(e) => updateExtractedStock(idx, { currentPrice: e.target.value })}
+                          />
+                        </label>
+
+                        <label className="space-y-1">
+                          <div className="text-xs text-muted-foreground">Purchase price (GAV)</div>
+                          <input
+                            className={`h-9 w-full rounded-md border bg-background px-3 text-sm ${
+                              purchasePriceMissing ? 'border-red-500' : ''
+                            }`}
+                            inputMode="decimal"
+                            value={stock.purchasePrice ?? ''}
+                            onChange={(e) => updateExtractedStock(idx, { purchasePrice: e.target.value })}
+                            placeholder={purchasePriceMissing ? 'Required' : undefined}
+                          />
+                        </label>
+
+                        <label className="space-y-1">
+                          <div className="text-xs text-muted-foreground">Dividend yield (%)</div>
+                          <input
+                            className="h-9 w-full rounded-md border bg-background px-3 text-sm"
+                            inputMode="decimal"
+                            value={stock.dividendYield ?? ''}
+                            onChange={(e) => updateExtractedStock(idx, { dividendYield: e.target.value })}
+                          />
+                        </label>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel onClick={() => setExtractedStocks([])}>Cancel</AlertDialogCancel>

@@ -14,6 +14,39 @@ export function ScreenshotUpload({ onStocksExtracted, projectId, publicAnonKey }
   const [uploading, setUploading] = useState(false);
   const [progress, setProgress] = useState({ current: 0, total: 0 });
 
+  const upscaleImageDataUrl = async (dataUrl: string): Promise<string> => {
+    try {
+      const img = new Image();
+      img.decoding = 'async';
+      img.src = dataUrl;
+      await new Promise<void>((resolve, reject) => {
+        img.onload = () => resolve();
+        img.onerror = () => reject(new Error('Failed to load image'));
+      });
+
+      // Make small UI text more legible to vision models.
+      // Target at least ~1400px wide, cap at 2400px to avoid huge payloads.
+      const targetWidth = Math.min(2400, Math.max(1400, img.width * 2));
+      const scale = targetWidth / img.width;
+      if (!Number.isFinite(scale) || scale <= 1) return dataUrl;
+
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(img.width * scale);
+      canvas.height = Math.round(img.height * scale);
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return dataUrl;
+
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+      // JPEG is smaller than PNG and usually fine for text screenshots at high quality.
+      return canvas.toDataURL('image/jpeg', 0.95);
+    } catch {
+      return dataUrl;
+    }
+  };
+
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
     if (files.length === 0) return;
@@ -37,26 +70,42 @@ export function ScreenshotUpload({ onStocksExtracted, projectId, publicAnonKey }
 
         try {
           // Convert image to base64
-          const base64Image = await new Promise<string>((resolve, reject) => {
+          const base64ImageRaw = await new Promise<string>((resolve, reject) => {
             const reader = new FileReader();
             reader.onloadend = () => resolve(reader.result as string);
             reader.onerror = reject;
             reader.readAsDataURL(file);
           });
-          
+          const base64Image = await upscaleImageDataUrl(base64ImageRaw);
+
+          const debugUpload =
+            typeof window !== 'undefined' &&
+            window.localStorage.getItem('DEBUG_SCREENSHOT_UPLOAD') === '1';
+
           const response = await fetch(
             `https://${projectId}.supabase.co/functions/v1/make-server-078eec38/upload-screenshot`,
             {
               method: 'POST',
+              cache: 'no-store',
               headers: {
                 'Content-Type': 'application/json',
                 'Authorization': `Bearer ${publicAnonKey}`,
               },
-              body: JSON.stringify({ imageBase64: base64Image }),
+              body: JSON.stringify({
+                imageBase64: base64Image,
+                ...(debugUpload ? { debug: true } : {}),
+              }),
             }
           );
 
           const data = await response.json();
+
+          if (debugUpload) {
+            const build = response.headers.get('X-Stockportfolio-Extract-Build');
+            console.info('[upload-screenshot] response header X-Stockportfolio-Extract-Build:', build);
+            console.info('[upload-screenshot] first row keys (no client-side strip):', data.data?.[0] ? Object.keys(data.data[0]) : []);
+            if (data._debug) console.info('[upload-screenshot] server _debug:', data._debug);
+          }
 
           if (!response.ok || !data.success) {
             throw new Error(data.error || 'Failed to process image');

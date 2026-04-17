@@ -1,0 +1,13 @@
+# Supabase CLI (https://supabase.com/docs/guides/cli)
+# Link this repo to your hosted project:
+#   supabase link --project-ref vyetqiczoggxnaezybdw
+# Deploy the Edge Function that matches the frontend URL slug:
+#   supabase functions deploy make-server-078eec38
+#
+# Set secrets (Dashboard → Edge Functions → Secrets, or CLI):
+#   supabase secrets set OPENAI_API_KEY=sk-...
+
+project_id = "stockportfolio"
+
+[api]
+enabled = true
